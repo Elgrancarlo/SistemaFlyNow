@@ -5,7 +5,7 @@ import "./globals.css";
 const geist = Geist({ subsets: ["latin"] });
 
 export const metadata: Metadata = {
-  title: "FLYNOW — Pedidos",
+  title: "Flynow — Order System",
   description: "Dashboard de gestão de pedidos FLYNOW",
 };
 
@@ -16,7 +16,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="pt-BR" className="h-full">
-      <body className={`${geist.className} min-h-full bg-gray-50 text-gray-900 antialiased`}>
+      <body className={`${geist.className} h-full text-gray-900 antialiased`}>
         {children}
       </body>
     </html>

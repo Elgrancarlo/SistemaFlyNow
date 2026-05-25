@@ -6,9 +6,11 @@ import type { EstoqueGrupo, EstoqueMovimentacao } from "@/lib/supabase";
 interface TabelaEstoqueProps {
   grupos: EstoqueGrupo[];
   movimentacoes: EstoqueMovimentacao[];
+  totaisPorGrupo: Record<string, { entradas: number; vendas: number }>;
+  periodoLabel: string;
 }
 
-export default function TabelaEstoque({ grupos, movimentacoes }: TabelaEstoqueProps) {
+export default function TabelaEstoque({ grupos, movimentacoes, totaisPorGrupo, periodoLabel }: TabelaEstoqueProps) {
   const [grupoSelecionado, setGrupoSelecionado] = useState<string | null>(null);
 
   const movimentacoesFiltradas = grupoSelecionado
@@ -19,16 +21,17 @@ export default function TabelaEstoque({ grupos, movimentacoes }: TabelaEstoquePr
     <div className="space-y-4">
       {/* Saldo por grupo */}
       <div className="bg-white rounded-lg border border-gray-200">
-        <div className="px-6 py-4 border-b border-gray-200">
+        <div className="px-6 py-4 border-b border-gray-200 flex items-center justify-between">
           <h2 className="text-base font-semibold text-gray-900">Saldo por Produto</h2>
+          <span className="text-xs text-gray-400">{periodoLabel}</span>
         </div>
         <table className="w-full text-sm">
           <thead>
             <tr className="bg-gray-50 border-b border-gray-200">
               <th className="text-left px-6 py-3 font-medium text-gray-600">Produto</th>
-              <th className="text-right px-6 py-3 font-medium text-gray-600">Entradas</th>
-              <th className="text-right px-6 py-3 font-medium text-gray-600">Vendidos</th>
-              <th className="text-right px-6 py-3 font-medium text-gray-600">Saldo</th>
+              <th className="text-right px-6 py-3 font-medium text-gray-600">Entradas (período)</th>
+              <th className="text-right px-6 py-3 font-medium text-gray-600">Vendidos (período)</th>
+              <th className="text-right px-6 py-3 font-medium text-gray-600">Saldo atual</th>
               <th className="px-6 py-3"></th>
             </tr>
           </thead>
@@ -41,21 +44,15 @@ export default function TabelaEstoque({ grupos, movimentacoes }: TabelaEstoquePr
               </tr>
             ) : (
               grupos.map((grupo) => {
-                const entradas = movimentacoes
-                  .filter((m) => m.produto_grupo === grupo.nome_grupo && m.tipo === "entrada")
-                  .reduce((acc, m) => acc + m.qtd_potes, 0);
-                const vendidos = movimentacoes
-                  .filter((m) => m.produto_grupo === grupo.nome_grupo && m.tipo === "venda")
-                  .reduce((acc, m) => acc + m.qtd_potes, 0);
-
+                const totais = totaisPorGrupo[grupo.nome_grupo] ?? { entradas: 0, vendas: 0 };
                 return (
                   <tr key={grupo.id} className="hover:bg-gray-50">
                     <td className="px-6 py-3 font-medium text-gray-900">{grupo.nome_grupo}</td>
                     <td className="px-6 py-3 text-right text-blue-700">
-                      +{entradas.toLocaleString("pt-BR")}
+                      +{totais.entradas.toLocaleString("pt-BR")}
                     </td>
                     <td className="px-6 py-3 text-right text-orange-700">
-                      -{vendidos.toLocaleString("pt-BR")}
+                      -{totais.vendas.toLocaleString("pt-BR")}
                     </td>
                     <td className="px-6 py-3 text-right">
                       <span
@@ -125,7 +122,7 @@ export default function TabelaEstoque({ grupos, movimentacoes }: TabelaEstoquePr
             {movimentacoesFiltradas.length === 0 ? (
               <tr>
                 <td colSpan={5} className="px-6 py-8 text-center text-gray-400">
-                  Nenhuma movimentação
+                  Nenhuma movimentação no período
                 </td>
               </tr>
             ) : (

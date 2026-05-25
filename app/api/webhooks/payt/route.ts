@@ -1,7 +1,29 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createServiceClient } from "@/lib/supabase";
+import { inferirGrupo } from "@/lib/produtos";
 
 const PAYT_INTEGRATION_KEY = process.env.PAYT_INTEGRATION_KEY;
+
+/** Lê chave dot-notation do payload flat da Payt: get(body, "customer.name") */
+function get<T>(body: Record<string, unknown>, key: string): T | null {
+  return (body[key] as T) ?? null;
+}
+
+/** Extrai todos os itens do produto do payload flat (product.items.0.*, product.items.1.*, ...) */
+function extractItems(body: Record<string, unknown>): Array<{ name: string | null; type: string | null; quantity: number }> {
+  const items = [];
+  for (let i = 0; ; i++) {
+    const type = get<string>(body, `product.items.${i}.type`);
+    const name = get<string>(body, `product.items.${i}.name`);
+    if (type === null && name === null) break;
+    items.push({
+      name,
+      type,
+      quantity: get<number>(body, `product.items.${i}.quantity`) ?? 0,
+    });
+  }
+  return items;
+}
 
 export async function POST(req: NextRequest) {
   let body: Record<string, unknown>;
@@ -24,6 +46,11 @@ export async function POST(req: NextRequest) {
   }
 
   const supabase = createServiceClient();
+
+  // Logar raw payload para auditoria (fire-and-forget)
+  supabase.from("payt_webhooks_raw").insert({ payload: body }).then(({ error }) => {
+    if (error) console.error("[webhook-payt] Erro ao logar raw:", error.message);
+  });
 
   // ── REEMBOLSO ──────────────────────────────────────────────────────────────
   if (status === "refunded") {
@@ -75,17 +102,36 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ ok: true, evento: "ignorado", motivo: "not_tangible" });
   }
 
-  const customer = body.customer as Record<string, unknown>;
-  const product = body.product as Record<string, unknown>;
-  const transaction = body.transaction as Record<string, unknown>;
-  const shipping = body.shipping as Record<string, unknown>;
+  // Dados do cliente (flat dot-notation)
+  const clienteNome     = get<string>(body, "customer.name") ?? "Desconhecido";
+  const clienteEmail    = get<string>(body, "customer.email");
+  const clienteTelefone = get<string>(body, "customer.phone");
+  const clienteCpf      = get<string>(body, "customer.doc");
 
-  // Extrair potes dos itens físicos
-  const items = (product?.items as Array<Record<string, unknown>>) ?? [];
+  // Dados do produto
+  const produtoNome  = get<string>(body, "product.name");
+  const items        = extractItems(body);
   const itensFisicos = items.filter((i) => i.type === "physical");
-  const qtdPotes = itensFisicos.reduce((acc, i) => acc + ((i.quantity as number) ?? 0), 0);
-  const produtoGrupo = (itensFisicos[0]?.name as string) ?? (product?.name as string) ?? null;
-  const valorTotal = transaction?.total_price ? (transaction.total_price as number) / 100 : null;
+  const qtdPotes     = itensFisicos.reduce((acc, i) => acc + i.quantity, 0);
+  const rawGrupo     = itensFisicos[0]?.name ?? produtoNome ?? null;
+  const produtoGrupo = inferirGrupo(rawGrupo) ?? rawGrupo;
+
+  // Transação
+  const totalPriceCents = get<number>(body, "transaction.total_price");
+  const valorTotal      = totalPriceCents ? totalPriceCents / 100 : null;
+  const formaPagamento  = get<string>(body, "transaction.payment_method");
+  const dataPagamento   = get<string>(body, "transaction.paid_at");
+  const parcelas        = get<number>(body, "transaction.installments");
+  const paytCartId      = (body.cart_id as string) ?? null;
+
+  // Endereço de entrega
+  const enderecoEntrega: Record<string, unknown> = {};
+  for (const field of ["street", "street_number", "complement", "district", "city", "state", "zipcode", "country"]) {
+    const val = get<string>(body, `shipping.address.${field}`);
+    if (val) enderecoEntrega[field] = val;
+  }
+
+  console.log(`[webhook-payt] paid | ${transactionId} | ${clienteNome} | ${produtoNome} | ${qtdPotes} potes | R$${valorTotal}`);
 
   // Idempotência
   const { data: existente } = await supabase
@@ -103,20 +149,22 @@ export async function POST(req: NextRequest) {
     .from("pedidos")
     .insert({
       payt_transaction_id: transactionId,
-      cliente_nome: customer?.name ?? "Desconhecido",
-      cliente_email: customer?.email ?? null,
-      cliente_telefone: customer?.phone ?? null,
-      cliente_cpf: customer?.doc ?? null,
-      produto_nome: product?.name ?? null,
-      produto_grupo: produtoGrupo,
-      qtd_potes: qtdPotes || null,
-      valor_total: valorTotal,
-      forma_pagamento: transaction?.payment_method ?? null,
-      data_pagamento: transaction?.paid_at ?? null,
-      endereco_entrega: (shipping?.address as Record<string, unknown>) ?? null,
-      status: "aguardando_postagem",
-      status_pagamento: "paid",
-      chargeback: false,
+      payt_cart_id:        paytCartId,
+      cliente_nome:        clienteNome,
+      cliente_email:       clienteEmail,
+      cliente_telefone:    clienteTelefone,
+      cliente_cpf:         clienteCpf,
+      produto_nome:        produtoNome,
+      produto_grupo:       produtoGrupo,
+      qtd_potes:           qtdPotes > 0 ? qtdPotes : null,
+      valor_total:         valorTotal,
+      forma_pagamento:     formaPagamento,
+      parcelas:            parcelas,
+      data_pagamento:      dataPagamento,
+      endereco_entrega:    Object.keys(enderecoEntrega).length > 0 ? enderecoEntrega : null,
+      status:              "pago",
+      status_pagamento:    "paid",
+      chargeback:          false,
     })
     .select("id")
     .single();
@@ -125,6 +173,8 @@ export async function POST(req: NextRequest) {
     console.error("[webhook-payt] Erro ao inserir:", error);
     return NextResponse.json({ ok: false, erro: error.message }, { status: 500 });
   }
+
+  console.log(`[webhook-payt] Inserido: id=${pedido!.id}`);
 
   // Decrementar estoque
   if (produtoGrupo && qtdPotes > 0) {

@@ -34,6 +34,9 @@ interface H7Order {
   tracking_code?: string | null;
   shipping_company?: string | null;
   plan?: { qty?: number; name?: string };
+  promised_date?: string | null;        // "YYYY-MM-DD" — prazo prometido pela H7
+  delivered_at?: string | null;         // ISO — data de entrega confirmada
+  last_hub_arrival?: string | null;     // ISO — última vez que chegou em uma base
 }
 
 interface H7Response {
@@ -133,6 +136,16 @@ async function runSync(startDate: string, endDate: string) {
           updates.status = novoStatus;
           if (novoStatus === "entregue") updates.data_entrega = new Date().toISOString();
         }
+      }
+
+      // Capturar data prometida pela H7 (campo promised_date: "YYYY-MM-DD")
+      if (order.promised_date) {
+        updates.data_prometida_entrega = order.promised_date;
+      }
+
+      // Capturar data de chegada na base logística (campo last_hub_arrival)
+      if (order.last_hub_arrival) {
+        updates.data_chegou_logistica = order.last_hub_arrival;
       }
 
       if (Object.keys(updates).length === 0) continue;
