@@ -3,7 +3,7 @@
 import { useState, useMemo } from "react";
 import { ExternalLink } from "lucide-react";
 import type { Pedido, StatusPedido } from "@/lib/supabase";
-import { STATUS_LABELS, STATUS_COLORS } from "@/lib/supabase";
+import { PAYMENT_STATUS_COLORS, PAYMENT_STATUS_LABELS, STATUS_LABELS, STATUS_COLORS } from "@/lib/supabase";
 
 interface TabelaPedidosProps {
   pedidos: Pedido[];
@@ -98,6 +98,11 @@ export default function TabelaPedidos({ pedidos, onDetalhe }: TabelaPedidosProps
     return new Date(d).toLocaleDateString("pt-BR", { day: "2-digit", month: "2-digit", year: "numeric" });
   }
 
+  function formatarStatusPagamento(status: string | null) {
+    if (!status) return "—";
+    return PAYMENT_STATUS_LABELS[status] ?? status;
+  }
+
   return (
     <div className="bg-white rounded-lg border border-gray-200">
       {/* Filtros */}
@@ -150,7 +155,7 @@ export default function TabelaPedidos({ pedidos, onDetalhe }: TabelaPedidosProps
               <th className="text-left px-4 py-3 font-medium text-gray-600 whitespace-nowrap">Produto</th>
               <th className="text-left px-4 py-3 font-medium text-gray-600 whitespace-nowrap">Potes</th>
               <th className="text-left px-4 py-3 font-medium text-gray-600 whitespace-nowrap">Valor</th>
-              <th className="text-left px-4 py-3 font-medium text-gray-600 whitespace-nowrap">Pagamento</th>
+              <th className="text-left px-4 py-3 font-medium text-gray-600 whitespace-nowrap">Status pagto</th>
               <th className="text-left px-4 py-3 font-medium text-gray-600 whitespace-nowrap">Rastreio</th>
               <th className="text-left px-4 py-3 font-medium text-gray-600 whitespace-nowrap">Status</th>
               <th className="text-left px-4 py-3 font-medium text-gray-600 whitespace-nowrap">Ações</th>
@@ -206,8 +211,17 @@ export default function TabelaPedidos({ pedidos, onDetalhe }: TabelaPedidosProps
                   <td className="px-4 py-3 text-gray-700 whitespace-nowrap">
                     {formatarValor(pedido.valor_total)}
                   </td>
-                  <td className="px-4 py-3 text-gray-500 whitespace-nowrap">
-                    {formatarData(pedido.data_pagamento)}
+                  <td className="px-4 py-3 whitespace-nowrap">
+                    <div>
+                      <span
+                        className={`inline-flex rounded-full px-2 py-1 text-xs font-medium ${PAYMENT_STATUS_COLORS[pedido.status_pagamento ?? ""] ?? "bg-gray-100 text-gray-700"}`}
+                      >
+                        {formatarStatusPagamento(pedido.status_pagamento)}
+                      </span>
+                    </div>
+                    <div className="mt-1 text-xs text-gray-500">
+                      {pedido.data_pagamento ? formatarData(pedido.data_pagamento) : formatarData(pedido.created_at)}
+                    </div>
                   </td>
                   <td className="px-4 py-3">
                     {pedido.codigo_rastreio ? (

@@ -20,6 +20,12 @@ export default function PedidosClientView({
 }: PedidosClientViewProps) {
   const [view, setView] = useState<"tabela" | "kanban">("tabela");
   const [pedidoModal, setPedidoModal] = useState<Pedido | null>(null);
+  const pedidosKanban = pedidos.filter((pedido) =>
+    pedido.status_pagamento === "paid" ||
+    pedido.status_pagamento === "refunded" ||
+    pedido.status_pagamento === "chargeback" ||
+    pedido.status_pagamento === "charged_back",
+  );
 
   const fmt = (v: number) =>
     new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(v);
@@ -43,7 +49,7 @@ export default function PedidosClientView({
           <TabelaPedidos pedidos={pedidos} onDetalhe={setPedidoModal} />
         </div>
       ) : (
-        <KanbanBoard pedidosIniciais={pedidos} onDetalhe={setPedidoModal} />
+        <KanbanBoard pedidosIniciais={pedidosKanban} onDetalhe={setPedidoModal} />
       )}
 
       {/* Modal de detalhe */}

@@ -3,7 +3,7 @@
 import { useState } from "react";
 import { X, Copy, ExternalLink } from "lucide-react";
 import type { Pedido, StatusPedido } from "@/lib/supabase";
-import { STATUS_LABELS, STATUS_COLORS } from "@/lib/supabase";
+import { PAYMENT_STATUS_COLORS, PAYMENT_STATUS_LABELS, STATUS_LABELS, STATUS_COLORS } from "@/lib/supabase";
 
 const PAGAMENTO_LABEL: Record<string, string> = {
   credit_card: "Cartão de Crédito",
@@ -218,6 +218,14 @@ export default function ModalPedido({ pedido, onClose }: ModalPedidoProps) {
                 <Row label="Parcelas" value={`${pedido.parcelas}x`} />
               )}
               <Row label="Valor total" value={fmt(pedido.valor_total)} />
+              <div className="flex items-center justify-between py-1.5 gap-4 border-b border-gray-50">
+                <span className="text-xs text-gray-400 shrink-0 w-28">Status pagto</span>
+                <span
+                  className={`inline-flex rounded-full px-2 py-1 text-xs font-medium ${PAYMENT_STATUS_COLORS[pedido.status_pagamento ?? ""] ?? "bg-gray-100 text-gray-700"}`}
+                >
+                  {PAYMENT_STATUS_LABELS[pedido.status_pagamento ?? ""] ?? pedido.status_pagamento ?? "—"}
+                </span>
+              </div>
               <Row label="Data pagamento" value={fmtData(pedido.data_pagamento)} />
               {pedido.nfc_numero && (
                 <Row

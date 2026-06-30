@@ -2,33 +2,28 @@ import Shell from "@/components/shell";
 import PageHeader from "@/components/page-header";
 import FiltroPeriodo from "@/components/pedidos/filtro-periodo";
 import { createServiceClient } from "@/lib/supabase";
+import { getFinancialEventMetrics } from "@/lib/financeiro";
+import { getTodayInAppTimezone, getUtcRangeForAppDates } from "@/lib/app-dates";
 import { TrendingUp, TrendingDown, ShoppingBag, Wallet } from "lucide-react";
 
 export const dynamic = "force-dynamic";
 
 function defaultDates() {
-  const hoje = new Date();
-  const inicio = new Date(hoje.getFullYear(), hoje.getMonth(), 1);
+  const endDate = getTodayInAppTimezone();
+  const [year, month] = endDate.split("-").map(Number);
+  const startDate = `${year}-${String(month).padStart(2, "0")}-01`;
   return {
-    startDate: inicio.toISOString().slice(0, 10),
-    endDate: hoje.toISOString().slice(0, 10),
+    startDate,
+    endDate,
   };
 }
 
 const fmt = (v: number) =>
   new Intl.NumberFormat("pt-BR", { style: "currency", currency: "BRL" }).format(v);
 
-interface MetricasFinanceiras {
-  chargebacks: number;
-  valorChargebacks: number;
-  reembolsos: number;
-  valorReembolsos: number;
-}
-
 async function getFinanceiro(startDate: string, endDate: string) {
   const supabase = createServiceClient();
-  const p_start = startDate + "T00:00:00Z";
-  const p_end   = endDate   + "T23:59:59Z";
+  const { startTs: p_start, endTs: p_end } = getUtcRangeForAppDates(startDate, endDate);
 
   // Buscar receita bruta e total de pedidos pagos no período
   const { data: pedidosPagos } = await supabase
@@ -36,6 +31,7 @@ async function getFinanceiro(startDate: string, endDate: string) {
     .select("valor_total")
     .eq("status_pagamento", "paid")
     .eq("chargeback", false)
+    .not("data_pagamento", "is", null)
     .gte("data_pagamento", p_start)
     .lte("data_pagamento", p_end);
 
@@ -44,17 +40,7 @@ async function getFinanceiro(startDate: string, endDate: string) {
   const ticketMedio  = totalPedidos > 0 ? receitaBruta / totalPedidos : 0;
 
   // Chargebacks + reembolsos via RPC
-  const { data: metricasRaw } = await supabase
-    .rpc("metricas_financeiras", { p_start, p_end });
-
-  const metricas: MetricasFinanceiras = metricasRaw
-    ? {
-        chargebacks:       Number((metricasRaw as MetricasFinanceiras).chargebacks      ?? 0),
-        valorChargebacks:  Number((metricasRaw as MetricasFinanceiras).valorChargebacks ?? 0),
-        reembolsos:        Number((metricasRaw as MetricasFinanceiras).reembolsos       ?? 0),
-        valorReembolsos:   Number((metricasRaw as MetricasFinanceiras).valorReembolsos  ?? 0),
-      }
-    : { chargebacks: 0, valorChargebacks: 0, reembolsos: 0, valorReembolsos: 0 };
+  const metricas = await getFinancialEventMetrics(startDate, endDate);
 
   const totalRevertido = metricas.valorChargebacks + metricas.valorReembolsos;
   const receitaLiquida = receitaBruta - totalRevertido;
@@ -107,7 +93,7 @@ export default async function FinanceiroPage({
             <p className={`text-2xl font-bold mt-1 ${receitaLiquida >= 0 ? "text-indigo-600" : "text-red-600"}`}>
               {fmt(receitaLiquida)}
             </p>
-            <p className="text-xs text-gray-400 mt-1">bruta − chargebacks − reembolsos</p>
+            <p className="text-xs text-gray-400 mt-1">bruta do período − reversões por evento no período</p>
           </div>
 
           <div className="bg-white rounded-xl border border-gray-200 p-5">
@@ -125,7 +111,7 @@ export default async function FinanceiroPage({
               <p className="text-xs font-medium text-gray-500 uppercase tracking-wide">Total Revertido</p>
             </div>
             <p className="text-2xl font-bold text-red-500 mt-1">{fmt(totalRevertido)}</p>
-            <p className="text-xs text-gray-400 mt-1">taxa CB: {taxaCB}%</p>
+            <p className="text-xs text-gray-400 mt-1">eventos financeiros no período · taxa CB: {taxaCB}%</p>
           </div>
         </div>
 

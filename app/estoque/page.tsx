@@ -3,6 +3,7 @@ import TabelaEstoque from "@/components/estoque/tabela-estoque";
 import FormEntrada from "@/components/estoque/form-entrada";
 import Shell from "@/components/shell";
 import type { EstoqueGrupo, EstoqueMovimentacao } from "@/lib/supabase";
+import { inferirGrupo } from "@/lib/produtos";
 
 export const dynamic = "force-dynamic";
 
@@ -44,6 +45,18 @@ function periodoParaData(dias: number | null): string | null {
   return d.toISOString();
 }
 
+function normalizarGrupoEstoque(value: string) {
+  return inferirGrupo(value) ?? value.trim();
+}
+
+function isManualAdjustment(observacao: string | null) {
+  return (observacao ?? "").toLowerCase().startsWith("ajuste manual de saldo");
+}
+
+function isAutomaticRestock(observacao: string | null) {
+  return (observacao ?? "").toLowerCase().startsWith("estorno automático:");
+}
+
 export default async function EstoquePage({
   searchParams,
 }: {
@@ -58,19 +71,60 @@ export default async function EstoquePage({
     getMovimentacoesPeriodo(desde),
   ]);
 
+  const gruposAgregadosMap = new Map<string, EstoqueGrupo>();
+  for (const grupo of grupos) {
+    const nomeGrupo = normalizarGrupoEstoque(grupo.nome_grupo);
+    const atual = gruposAgregadosMap.get(nomeGrupo);
+    if (atual) {
+      atual.estoque_atual += grupo.estoque_atual;
+      if (grupo.updated_at > atual.updated_at) atual.updated_at = grupo.updated_at;
+      continue;
+    }
+    gruposAgregadosMap.set(nomeGrupo, {
+      ...grupo,
+      nome_grupo: nomeGrupo,
+    });
+  }
+  const gruposAgregados = Array.from(gruposAgregadosMap.values()).sort((a, b) => a.nome_grupo.localeCompare(b.nome_grupo));
+
+  const movimentacoesNormalizadas = movimentacoes.map((movimentacao) => ({
+    ...movimentacao,
+    produto_grupo: normalizarGrupoEstoque(movimentacao.produto_grupo),
+  }));
+
+  const movimentacoesOperacionais = movimentacoesNormalizadas.filter(
+    (movimentacao) => !isManualAdjustment(movimentacao.observacao) && !isAutomaticRestock(movimentacao.observacao),
+  );
+  const movimentacoesAjuste = movimentacoesNormalizadas.filter((movimentacao) => isManualAdjustment(movimentacao.observacao));
+  const movimentacoesEstorno = movimentacoesNormalizadas.filter((movimentacao) => isAutomaticRestock(movimentacao.observacao));
+
   // Totais do período selecionado
-  const totalVendidoPeriodo = movimentacoes
+  const totalVendidoPeriodo = movimentacoesOperacionais
     .filter((m) => m.tipo === "venda")
     .reduce((acc, m) => acc + m.qtd_potes, 0);
 
-  const totalEntradaPeriodo = movimentacoes
+  const totalEntradaPeriodo = movimentacoesOperacionais
     .filter((m) => m.tipo === "entrada")
     .reduce((acc, m) => acc + m.qtd_potes, 0);
 
+  const saldoAjustadoPeriodo = movimentacoesAjuste.reduce((acc, m) => {
+    return acc + (m.tipo === "entrada" ? m.qtd_potes : -m.qtd_potes);
+  }, 0);
+
+  const totalEstornadoPeriodo = movimentacoesEstorno.reduce((acc, m) => acc + m.qtd_potes, 0);
+
   // Totais por grupo no período
-  const totaisPorGrupo: Record<string, { entradas: number; vendas: number }> = {};
-  for (const m of movimentacoes) {
-    if (!totaisPorGrupo[m.produto_grupo]) totaisPorGrupo[m.produto_grupo] = { entradas: 0, vendas: 0 };
+  const totaisPorGrupo: Record<string, { entradas: number; vendas: number; ajustes: number; estornos: number }> = {};
+  for (const m of movimentacoesNormalizadas) {
+    if (!totaisPorGrupo[m.produto_grupo]) totaisPorGrupo[m.produto_grupo] = { entradas: 0, vendas: 0, ajustes: 0, estornos: 0 };
+    if (isManualAdjustment(m.observacao)) {
+      totaisPorGrupo[m.produto_grupo].ajustes += m.tipo === "entrada" ? m.qtd_potes : -m.qtd_potes;
+      continue;
+    }
+    if (isAutomaticRestock(m.observacao)) {
+      totaisPorGrupo[m.produto_grupo].estornos += m.qtd_potes;
+      continue;
+    }
     if (m.tipo === "entrada") totaisPorGrupo[m.produto_grupo].entradas += m.qtd_potes;
     else totaisPorGrupo[m.produto_grupo].vendas += m.qtd_potes;
   }
@@ -115,7 +169,7 @@ export default async function EstoquePage({
         </div>
 
         {/* Cards período */}
-        <div className="grid grid-cols-2 gap-4">
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-4">
           <div className="bg-white rounded-lg border border-gray-200 p-4 text-center">
             <div className="text-2xl font-bold text-blue-700">{totalEntradaPeriodo.toLocaleString("pt-BR")}</div>
             <div className="text-sm text-gray-500 mt-1">Potes entrada — {periodoLabel}</div>
@@ -124,16 +178,26 @@ export default async function EstoquePage({
             <div className="text-2xl font-bold text-orange-700">{totalVendidoPeriodo.toLocaleString("pt-BR")}</div>
             <div className="text-sm text-gray-500 mt-1">Potes vendidos — {periodoLabel}</div>
           </div>
+          <div className="bg-white rounded-lg border border-gray-200 p-4 text-center">
+            <div className="text-2xl font-bold text-emerald-700">{totalEstornadoPeriodo.toLocaleString("pt-BR")}</div>
+            <div className="text-sm text-gray-500 mt-1">Estornos automáticos — {periodoLabel}</div>
+          </div>
+          <div className="bg-white rounded-lg border border-gray-200 p-4 text-center">
+            <div className={`text-2xl font-bold ${saldoAjustadoPeriodo >= 0 ? "text-indigo-700" : "text-rose-700"}`}>
+              {saldoAjustadoPeriodo > 0 ? "+" : ""}{saldoAjustadoPeriodo.toLocaleString("pt-BR")}
+            </div>
+            <div className="text-sm text-gray-500 mt-1">Ajustes manuais — {periodoLabel}</div>
+          </div>
         </div>
 
         <div className="bg-white rounded-lg border border-gray-200 p-6">
           <h2 className="text-base font-semibold text-gray-900 mb-4">Registrar Entrada de Estoque</h2>
-          <FormEntrada grupos={grupos.map((g) => g.nome_grupo)} />
+          <FormEntrada grupos={gruposAgregados.map((g) => g.nome_grupo)} />
         </div>
 
         <TabelaEstoque
-          grupos={grupos}
-          movimentacoes={movimentacoes.slice(0, 200)}
+          grupos={gruposAgregados}
+          movimentacoes={movimentacoesNormalizadas.slice(0, 200)}
           totaisPorGrupo={totaisPorGrupo}
           periodoLabel={periodoLabel}
         />
