@@ -221,6 +221,7 @@ export interface AnalyticsRedtrackDailyCampaign {
   lp_clicks: number;
   unique_clicks: number;
   total_revenue: number;
+  valor_vendido_2?: number | null;
   roas: number;
   imported_at: string;
 }
