@@ -4,13 +4,18 @@ import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
   ArrowLeft,
+  BookOpen,
   Check,
   CheckCircle2,
   Clock,
   Copy,
+  Headset,
+  Lightbulb,
   Mail,
   MapPin,
   Package,
+  ReceiptText,
+  Truck,
 } from "lucide-react";
 import dynamic from "next/dynamic";
 
@@ -52,7 +57,34 @@ interface PedidoDetalhe {
   } | null;
   timeline: EventoTimeline[];
   endereco_resumo: string | null;
+  endereco_completo: string[] | null;
+  qtd_potes: number | null;
+  data_pagamento: string | null;
+  conteudo: {
+    nome: string;
+    categoria: string;
+    descricao: string;
+    uso: { rotulo: string; valor: string }[];
+    dicas: string[];
+    avisos: string[];
+  } | null;
 }
+
+type Aba = "rastreio" | "pedido" | "usar" | "ajuda";
+
+const ABAS: { id: Aba; rotulo: string; Icone: typeof Truck }[] = [
+  { id: "rastreio", rotulo: "Rastreio", Icone: Truck },
+  { id: "pedido", rotulo: "Pedido", Icone: ReceiptText },
+  { id: "usar", rotulo: "Como usar", Icone: BookOpen },
+  { id: "ajuda", rotulo: "Atendimento", Icone: Headset },
+];
+
+const FORMA_PAGAMENTO: Record<string, string> = {
+  pix: "Pix",
+  credit_card: "Cartão de crédito",
+  billet: "Boleto",
+  boleto: "Boleto",
+};
 
 const ETAPAS = ["Confirmado", "Preparando", "Postado", "Em trânsito", "Entregue"];
 const EMAIL_SUPORTE = "flylabs@flylabssuporte.com";
@@ -96,6 +128,7 @@ export function PedidoView({ codigo }: { codigo: string }) {
   const [pedido, setPedido] = useState<PedidoDetalhe | null>(null);
   const [erro, setErro] = useState<string | null>(null);
   const [copiado, setCopiado] = useState(false);
+  const [aba, setAba] = useState<Aba>("rastreio");
 
   useEffect(() => {
     const cpf = sessionStorage.getItem("meupedido_cpf");
@@ -264,6 +297,8 @@ export function PedidoView({ codigo }: { codigo: string }) {
         )}
       </section>
 
+      {aba === "rastreio" && (
+        <>
       {/* Onde está */}
       {pedido.ultima_posicao && (
         <section className="mt-4 overflow-hidden rounded-2xl bg-white shadow-sm ring-1 ring-stone-900/5">
@@ -368,8 +403,126 @@ export function PedidoView({ codigo }: { codigo: string }) {
           ))}
         </ol>
       </section>
+        </>
+      )}
+
+      {/* Aba Pedido: detalhes da compra e entrega */}
+      {aba === "pedido" && (
+        <section className="mt-4 rounded-2xl bg-white p-5 shadow-sm ring-1 ring-stone-900/5">
+          <p className="text-xs font-semibold tracking-wide text-orange-700 uppercase">
+            Detalhes do pedido
+          </p>
+          <dl className="mt-3 divide-y divide-stone-100 text-sm">
+            {[
+              ["Pedido", `#${pedido.codigo}`],
+              ["Produto", pedido.produto],
+              pedido.qtd_potes ? ["Quantidade", `${pedido.qtd_potes} pote${pedido.qtd_potes > 1 ? "s" : ""}`] : null,
+              pedido.valor_total != null ? ["Valor", valorBRL(pedido.valor_total)] : null,
+              pedido.forma_pagamento
+                ? [
+                    "Pagamento",
+                    `${FORMA_PAGAMENTO[pedido.forma_pagamento] ?? pedido.forma_pagamento}${
+                      pedido.parcelas && pedido.parcelas > 1 ? ` em ${pedido.parcelas}x` : ""
+                    }`,
+                  ]
+                : null,
+              pedido.data_pagamento ? ["Data da compra", dataBR(pedido.data_pagamento)] : null,
+              pedido.codigo_rastreio ? ["Rastreio", pedido.codigo_rastreio] : null,
+            ]
+              .filter((r): r is [string, string] => Boolean(r))
+              .map(([rotulo, valor]) => (
+                <div key={rotulo} className="flex items-baseline justify-between gap-4 py-2">
+                  <dt className="shrink-0 text-stone-500">{rotulo}</dt>
+                  <dd className="text-right font-medium text-stone-900">{valor}</dd>
+                </div>
+              ))}
+          </dl>
+          {pedido.endereco_completo && (
+            <div className="mt-4 rounded-xl bg-stone-50 p-3.5">
+              <p className="mb-1 flex items-center gap-1.5 text-xs font-semibold tracking-wide text-stone-500 uppercase">
+                <MapPin className="h-3.5 w-3.5" aria-hidden /> Endereço de entrega
+              </p>
+              {pedido.endereco_completo.map((linha) => (
+                <p key={linha} className="text-sm text-stone-700">
+                  {linha}
+                </p>
+              ))}
+            </div>
+          )}
+        </section>
+      )}
+
+      {/* Aba Como usar: conteúdo curado por produto */}
+      {aba === "usar" &&
+        (pedido.conteudo ? (
+          <>
+            <section className="mt-4 rounded-2xl bg-white p-5 shadow-sm ring-1 ring-stone-900/5">
+              <p className="text-xs font-semibold tracking-wide text-orange-700 uppercase">
+                Sobre o produto
+              </p>
+              <h2 className="mt-1 text-lg font-bold text-stone-900">{pedido.conteudo.nome}</h2>
+              <p className="text-xs text-stone-400">{pedido.conteudo.categoria}</p>
+              <p className="mt-2 text-sm leading-relaxed text-stone-600">
+                {pedido.conteudo.descricao}
+              </p>
+            </section>
+
+            <section className="mt-4 rounded-2xl bg-white p-5 shadow-sm ring-1 ring-stone-900/5">
+              <p className="text-xs font-semibold tracking-wide text-orange-700 uppercase">
+                Como usar
+              </p>
+              <dl className="mt-2 divide-y divide-stone-100 text-sm">
+                {pedido.conteudo.uso.map((u) => (
+                  <div key={u.rotulo} className="flex items-baseline justify-between gap-4 py-2.5">
+                    <dt className="shrink-0 font-medium text-stone-500">{u.rotulo}</dt>
+                    <dd className="text-right text-stone-800">{u.valor}</dd>
+                  </div>
+                ))}
+              </dl>
+            </section>
+
+            <section className="mt-4 rounded-2xl bg-white p-5 shadow-sm ring-1 ring-stone-900/5">
+              <p className="text-xs font-semibold tracking-wide text-orange-700 uppercase">
+                Dicas para o melhor resultado
+              </p>
+              <ul className="mt-2 space-y-2.5">
+                {pedido.conteudo.dicas.map((dica) => (
+                  <li key={dica} className="flex gap-2.5 text-sm text-stone-700">
+                    <Lightbulb className="mt-0.5 h-4 w-4 shrink-0 text-amber-500" aria-hidden />
+                    {dica}
+                  </li>
+                ))}
+              </ul>
+              <div className="mt-4 space-y-1 border-t border-stone-100 pt-3">
+                {pedido.conteudo.avisos.map((aviso) => (
+                  <p key={aviso} className="text-[11px] leading-snug text-stone-400">
+                    {aviso}
+                  </p>
+                ))}
+              </div>
+            </section>
+          </>
+        ) : (
+          <section className="mt-4 rounded-2xl bg-white p-5 text-center shadow-sm ring-1 ring-stone-900/5">
+            <BookOpen className="mx-auto h-8 w-8 text-stone-300" aria-hidden />
+            <p className="mt-2 font-medium text-stone-800">
+              Siga as instruções de uso no rótulo do produto
+            </p>
+            <p className="mt-1 text-sm text-stone-500">
+              Qualquer dúvida sobre como usar o {pedido.produto}, nossa equipe te orienta pelo
+              e-mail — é só chamar na aba Atendimento.
+            </p>
+            <button
+              onClick={() => setAba("ajuda")}
+              className="mt-3 rounded-xl bg-stone-900 px-4 py-2.5 text-sm font-semibold text-white"
+            >
+              Falar com o suporte
+            </button>
+          </section>
+        ))}
 
       {/* Atendimento */}
+      {aba === "ajuda" && (
       <section className="mt-4 rounded-2xl bg-white p-5 shadow-sm ring-1 ring-stone-900/5">
         <p className="text-xs font-semibold tracking-wide text-orange-700 uppercase">Atendimento</p>
         <p className="mt-1 text-sm text-stone-600">
@@ -385,12 +538,33 @@ export function PedidoView({ codigo }: { codigo: string }) {
         </a>
         <p className="mt-2 text-center text-xs text-stone-400">{EMAIL_SUPORTE}</p>
       </section>
+      )}
 
-      {pedido.endereco_resumo && (
+      {aba === "rastreio" && pedido.endereco_resumo && (
         <p className="mt-4 text-center text-xs text-stone-400">
           Entrega em: {pedido.endereco_resumo}
         </p>
       )}
+
+      {/* Navegação inferior fixa (padrão do modelo de referência) */}
+      <div className="h-20" aria-hidden />
+      <nav className="fixed inset-x-0 bottom-0 z-20 border-t border-stone-200 bg-white/95 backdrop-blur">
+        <div className="mx-auto flex w-full max-w-md items-stretch justify-around px-2 pt-1.5 pb-[max(0.375rem,env(safe-area-inset-bottom))]">
+          {ABAS.map(({ id, rotulo, Icone }) => (
+            <button
+              key={id}
+              onClick={() => setAba(id)}
+              aria-current={aba === id ? "page" : undefined}
+              className={`flex flex-col items-center gap-0.5 rounded-lg px-3 py-1.5 text-[11px] font-medium transition ${
+                aba === id ? "text-orange-600" : "text-stone-400 hover:text-stone-600"
+              }`}
+            >
+              <Icone className="h-5 w-5" aria-hidden />
+              {rotulo}
+            </button>
+          ))}
+        </div>
+      </nav>
     </main>
   );
 }

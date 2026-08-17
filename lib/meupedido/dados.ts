@@ -1,6 +1,7 @@
 // Camada de dados da página pública "Meu Pedido" (rastreio pelo cliente).
 // Toda consulta parte do CPF — é a chave de liberação escolhida pelo negócio.
 import { createServiceClient } from "@/lib/supabase";
+import { conteudoDoProduto, type ConteudoProduto } from "./conteudo-produtos";
 import municipiosRaw from "./municipios.json";
 
 const MUNICIPIOS = municipiosRaw as unknown as Record<string, [number, number]>;
@@ -49,6 +50,10 @@ export interface PedidoDetalhe {
   } | null;
   timeline: EventoTimeline[];
   endereco_resumo: string | null;
+  endereco_completo: string[] | null;
+  qtd_potes: number | null;
+  data_pagamento: string | null;
+  conteudo: ConteudoProduto | null;
 }
 
 // ── Normalizações ────────────────────────────────────────────────────────────
@@ -72,13 +77,25 @@ function lerEndereco(e: Record<string, unknown> | null): {
   cidade: string | null;
   uf: string | null;
   resumo: string | null;
+  completo: string[] | null;
 } {
-  if (!e) return { cidade: null, uf: null, resumo: null };
+  if (!e) return { cidade: null, uf: null, resumo: null, completo: null };
   const cidade = ((e.cidade ?? e.city) as string) || null;
   const uf = ((e.estado ?? e.state) as string) || null;
   const bairro = ((e.bairro ?? e.district) as string) || null;
+  const rua = ((e.rua ?? e.street) as string) || null;
+  const numero = ((e.numero ?? e.street_number) as string) || null;
+  const compl = ((e.complemento ?? e.complement) as string) || null;
+  const cep = ((e.cep ?? e.zipcode) as string) || null;
   const resumo = [bairro, cidade && uf ? `${cidade}/${uf}` : cidade].filter(Boolean).join(" — ") || null;
-  return { cidade, uf, resumo };
+  const linhas = [
+    [rua, numero].filter(Boolean).join(", ") || null,
+    compl,
+    bairro,
+    cidade && uf ? `${cidade}/${uf}` : cidade,
+    cep ? `CEP ${cep.replace(/^(\d{5})(\d{3})$/, "$1-$2")}` : null,
+  ].filter(Boolean) as string[];
+  return { cidade, uf, resumo, completo: linhas.length ? linhas : null };
 }
 
 // ── Stepper: status interno → etapa (mesmas 5 do modelo de referência) ───────
@@ -255,5 +272,12 @@ export async function detalhePedido(cpf: string, codigo: string): Promise<Pedido
     ultima_posicao: ultimaPosicao,
     timeline,
     endereco_resumo: destinoInfo.resumo,
+    endereco_completo: destinoInfo.completo,
+    qtd_potes: pedido.qtd_potes as number | null,
+    data_pagamento: pedido.data_pagamento as string | null,
+    conteudo: conteudoDoProduto(
+      pedido.produto_nome as string | null,
+      pedido.produto_grupo as string | null
+    ),
   };
 }
