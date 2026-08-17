@@ -2,6 +2,7 @@
 // Toda consulta parte do CPF — é a chave de liberação escolhida pelo negócio.
 import { createServiceClient } from "@/lib/supabase";
 import { conteudoDoProduto, type ConteudoProduto } from "./conteudo-produtos";
+import { nomeExibicaoProduto } from "./nome-produto";
 import municipiosRaw from "./municipios.json";
 
 const MUNICIPIOS = municipiosRaw as unknown as Record<string, [number, number]>;
@@ -134,7 +135,7 @@ export async function listarPedidosPorCpf(cpf: string): Promise<PedidoResumo[]> 
     .filter((p) => p.payt_transaction_id)
     .map((p) => ({
       codigo: p.payt_transaction_id as string,
-      produto: (p.produto_nome ?? p.produto_grupo ?? "Pedido") as string,
+      produto: nomeExibicaoProduto(p.produto_nome as string | null, p.produto_grupo as string | null),
       valor_total: p.valor_total as number | null,
       status: p.status as string,
       data_pagamento: p.data_pagamento as string | null,
@@ -261,7 +262,10 @@ export async function detalhePedido(cpf: string, codigo: string): Promise<Pedido
     codigo: pedido.payt_transaction_id as string,
     primeiro_nome: nome.split(/\s+/)[0] || "cliente",
     cliente_nome: nome,
-    produto: (pedido.produto_nome ?? pedido.produto_grupo ?? "Pedido") as string,
+    produto: nomeExibicaoProduto(
+      pedido.produto_nome as string | null,
+      pedido.produto_grupo as string | null
+    ),
     valor_total: pedido.valor_total as number | null,
     forma_pagamento: pedido.forma_pagamento as string | null,
     parcelas: pedido.parcelas as number | null,
