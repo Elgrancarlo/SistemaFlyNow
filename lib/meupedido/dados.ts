@@ -114,6 +114,11 @@ const ETAPA_POR_STATUS: Record<string, number> = {
 
 // ── Consultas ────────────────────────────────────────────────────────────────
 
+// O cliente só vê compra CONCLUÍDA. O banco guarda toda tentativa de cobrança
+// (televendas re-tenta cartão: ~20% das linhas são canceled) — canceled,
+// expired e waiting_payment nunca aparecem na página.
+const PAGAMENTOS_VISIVEIS = ["paid", "chargeback", "refund_requested", "refunded"];
+
 export async function listarPedidosPorCpf(cpf: string): Promise<PedidoResumo[]> {
   const digits = soDigitos(cpf);
   if (digits.length !== 11) return [];
@@ -122,6 +127,7 @@ export async function listarPedidosPorCpf(cpf: string): Promise<PedidoResumo[]> 
     .from("pedidos")
     .select("payt_transaction_id,produto_nome,produto_grupo,valor_total,status,data_pagamento,codigo_rastreio,status_pagamento,chargeback")
     .eq("cliente_cpf", digits)
+    .in("status_pagamento", PAGAMENTOS_VISIVEIS)
     .order("data_pagamento", { ascending: false, nullsFirst: false })
     .limit(30);
   return (data ?? [])
@@ -152,6 +158,7 @@ export async function detalhePedido(cpf: string, codigo: string): Promise<Pedido
     )
     .eq("cliente_cpf", digits)
     .eq("payt_transaction_id", codigo)
+    .in("status_pagamento", PAGAMENTOS_VISIVEIS)
     .maybeSingle();
   if (!pedido) return null;
 
