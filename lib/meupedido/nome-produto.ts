@@ -27,11 +27,16 @@ function titleCase(palavra: string): string {
   return lower.charAt(0).toUpperCase() + lower.slice(1);
 }
 
+// Upsell/pedido adicional em qualquer grafia interna (incluindo o typo UPLSSEL).
+export function ehPedidoAdicional(nomeBruto: string | null): boolean {
+  return /\bUPSE?LL\b|\bUPLSSEL\b/i.test(nomeBruto ?? "");
+}
+
 export function nomeExibicaoProduto(nomeBruto: string | null, grupo: string | null): string {
   let nome = (nomeBruto ?? grupo ?? "Pedido").trim();
 
   // upsell (em qualquer grafia, incluindo o typo UPLSSEL) vira sufixo amigável
-  const ehUpsell = /\bUPSE?LL\b|\bUPLSSEL\b/i.test(nome);
+  const ehUpsell = ehPedidoAdicional(nome);
 
   nome = nome
     .replace(/\bUPSE?LL\b|\bUPLSSEL\b/gi, " ")

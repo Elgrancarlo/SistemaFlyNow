@@ -2,7 +2,7 @@
 // Toda consulta parte do CPF — é a chave de liberação escolhida pelo negócio.
 import { createServiceClient } from "@/lib/supabase";
 import { conteudoDoProduto, type ConteudoProduto } from "./conteudo-produtos";
-import { nomeExibicaoProduto } from "./nome-produto";
+import { ehPedidoAdicional, nomeExibicaoProduto } from "./nome-produto";
 import municipiosRaw from "./municipios.json";
 
 const MUNICIPIOS = municipiosRaw as unknown as Record<string, [number, number]>;
@@ -27,11 +27,18 @@ export interface EventoTimeline {
   atual: boolean;
 }
 
+export interface ItemCompra {
+  produto: string;
+  qtd_potes: number | null;
+  valor_total: number | null;
+}
+
 export interface PedidoDetalhe {
   codigo: string;
   primeiro_nome: string;
   cliente_nome: string;
   produto: string;
+  itens: ItemCompra[];
   valor_total: number | null;
   forma_pagamento: string | null;
   parcelas: number | null;
@@ -113,6 +120,93 @@ const ETAPA_POR_STATUS: Record<string, number> = {
   devolvido: 3,
 };
 
+const STATUS_PRIORIDADE: Record<string, number> = {
+  aguardando_postagem: 0,
+  pago: 0,
+  nota_fiscal: 0,
+  separacao: 0,
+  postado: 1,
+  em_transporte: 2,
+  aguardando_retirada: 3,
+  entregue: 4,
+  devolvido: 5,
+};
+
+// ── Agrupamento: mesma compra aos olhos do cliente ───────────────────────────
+// O upsell pós-checkout vira transação própria na Payt, mas é a MESMA compra e
+// viaja no envio do principal. Agrupa por rastreio compartilhado ou, antes da
+// postagem, por pedido adicional pago até 45 min do principal.
+
+interface LinhaCompra {
+  payt_transaction_id: string;
+  produto_nome: string | null;
+  produto_grupo: string | null;
+  qtd_potes: number | null;
+  valor_total: number | null;
+  status: string;
+  codigo_rastreio: string | null;
+  data_pagamento: string | null;
+}
+
+function mesmaCompra(a: LinhaCompra, b: LinhaCompra): boolean {
+  if (a.codigo_rastreio && a.codigo_rastreio === b.codigo_rastreio) return true;
+  const ta = a.data_pagamento ? Date.parse(a.data_pagamento) : NaN;
+  const tb = b.data_pagamento ? Date.parse(b.data_pagamento) : NaN;
+  if (Number.isNaN(ta) || Number.isNaN(tb)) return false;
+  return (
+    Math.abs(ta - tb) <= 45 * 60_000 &&
+    (ehPedidoAdicional(a.produto_nome) || ehPedidoAdicional(b.produto_nome))
+  );
+}
+
+function agruparCompras<T extends LinhaCompra>(rows: T[]): T[][] {
+  const grupos: T[][] = [];
+  for (const row of rows) {
+    const grupo = grupos.find((g) => g.some((r) => mesmaCompra(r, row)));
+    if (grupo) grupo.push(row);
+    else grupos.push([row]);
+  }
+  return grupos;
+}
+
+// rows vêm ordenadas por data_pagamento desc → o principal é a linha não-adicional
+// (fallback: a mais antiga, que é a última do grupo).
+function principalDaCompra<T extends LinhaCompra>(grupo: T[]): T {
+  return grupo.find((r) => !ehPedidoAdicional(r.produto_nome)) ?? grupo[grupo.length - 1];
+}
+
+function statusDaCompra(grupo: LinhaCompra[]): string {
+  return grupo.reduce(
+    (melhor, r) =>
+      (STATUS_PRIORIDADE[r.status] ?? 0) > (STATUS_PRIORIDADE[melhor] ?? 0) ? r.status : melhor,
+    grupo[0].status
+  );
+}
+
+function somaOuNull(grupo: LinhaCompra[], campo: "valor_total" | "qtd_potes"): number | null {
+  if (!grupo.some((r) => r[campo] != null)) return null;
+  return grupo.reduce((s, r) => s + (r[campo] ?? 0), 0);
+}
+
+// Título consolidado: adicionais do mesmo produto viram um kit maior
+// ("Derma Bloom · 9 potes"); produtos diferentes viram "+ N itens".
+function tituloDaCompra(grupo: LinhaCompra[], principal: LinhaCompra): string {
+  if (grupo.length === 1) {
+    return nomeExibicaoProduto(principal.produto_nome, principal.produto_grupo);
+  }
+  const mesmoProduto =
+    principal.produto_grupo &&
+    grupo.every((r) => (r.produto_grupo ?? "") === principal.produto_grupo);
+  if (mesmoProduto) {
+    const potes = somaOuNull(grupo, "qtd_potes");
+    const base = nomeExibicaoProduto(null, principal.produto_grupo);
+    return potes ? `${base} · ${potes} potes` : base;
+  }
+  const extras = grupo.length - 1;
+  const nome = nomeExibicaoProduto(principal.produto_nome, principal.produto_grupo);
+  return `${nome} + ${extras} ${extras === 1 ? "item" : "itens"}`;
+}
+
 // ── Consultas ────────────────────────────────────────────────────────────────
 
 // O cliente só vê compra CONCLUÍDA. O banco guarda toda tentativa de cobrança
@@ -126,21 +220,23 @@ export async function listarPedidosPorCpf(cpf: string): Promise<PedidoResumo[]> 
   const db = createServiceClient();
   const { data } = await db
     .from("pedidos")
-    .select("payt_transaction_id,produto_nome,produto_grupo,valor_total,status,data_pagamento,codigo_rastreio,status_pagamento,chargeback")
+    .select("payt_transaction_id,produto_nome,produto_grupo,qtd_potes,valor_total,status,data_pagamento,codigo_rastreio,status_pagamento,chargeback")
     .eq("cliente_cpf", digits)
     .in("status_pagamento", PAGAMENTOS_VISIVEIS)
     .order("data_pagamento", { ascending: false, nullsFirst: false })
     .limit(30);
-  return (data ?? [])
-    .filter((p) => p.payt_transaction_id)
-    .map((p) => ({
-      codigo: p.payt_transaction_id as string,
-      produto: nomeExibicaoProduto(p.produto_nome as string | null, p.produto_grupo as string | null),
-      valor_total: p.valor_total as number | null,
-      status: p.status as string,
-      data_pagamento: p.data_pagamento as string | null,
-      tem_rastreio: Boolean(p.codigo_rastreio),
-    }));
+  const rows = (data ?? []).filter((p) => p.payt_transaction_id) as unknown as LinhaCompra[];
+  return agruparCompras(rows).map((grupo) => {
+    const principal = principalDaCompra(grupo);
+    return {
+      codigo: principal.payt_transaction_id,
+      produto: tituloDaCompra(grupo, principal),
+      valor_total: somaOuNull(grupo, "valor_total"),
+      status: statusDaCompra(grupo),
+      data_pagamento: principal.data_pagamento,
+      tem_rastreio: grupo.some((r) => Boolean(r.codigo_rastreio)),
+    };
+  });
 }
 
 interface LoggiEvento {
@@ -152,24 +248,48 @@ export async function detalhePedido(cpf: string, codigo: string): Promise<Pedido
   const digits = soDigitos(cpf);
   if (digits.length !== 11 || !codigo) return null;
   const db = createServiceClient();
-  const { data: pedido } = await db
+  const { data } = await db
     .from("pedidos")
     .select(
       "payt_transaction_id,cliente_nome,cliente_cpf,produto_nome,produto_grupo,qtd_potes,valor_total,forma_pagamento,parcelas,status,codigo_rastreio,data_pagamento,data_prometida_entrega,data_entrega,data_chegou_logistica,endereco_entrega,created_at"
     )
     .eq("cliente_cpf", digits)
-    .eq("payt_transaction_id", codigo)
     .in("status_pagamento", PAGAMENTOS_VISIVEIS)
-    .maybeSingle();
-  if (!pedido) return null;
+    .order("data_pagamento", { ascending: false, nullsFirst: false })
+    .limit(30);
 
-  const destinoInfo = lerEndereco(pedido.endereco_entrega as Record<string, unknown> | null);
+  type LinhaDetalhe = LinhaCompra & {
+    cliente_nome: string | null;
+    forma_pagamento: string | null;
+    parcelas: number | null;
+    data_prometida_entrega: string | null;
+    data_entrega: string | null;
+    data_chegou_logistica: string | null;
+    endereco_entrega: Record<string, unknown> | null;
+    created_at: string | null;
+  };
+  const rows = (data ?? []).filter((p) => p.payt_transaction_id) as unknown as LinhaDetalhe[];
+
+  // O cliente pode chegar tanto pelo código do principal quanto pelo do
+  // adicional (links antigos) — os dois abrem a mesma compra.
+  const grupo = agruparCompras(rows).find((g) =>
+    g.some((r) => r.payt_transaction_id === codigo)
+  );
+  if (!grupo) return null;
+
+  const principal = principalDaCompra(grupo);
+  const status = statusDaCompra(grupo);
+  const codigoRastreio = grupo.map((r) => r.codigo_rastreio).find(Boolean) ?? null;
+  const dataEntrega = grupo.map((r) => r.data_entrega).find(Boolean) ?? null;
+  const dataChegouLogistica = grupo.map((r) => r.data_chegou_logistica).find(Boolean) ?? null;
+
+  const destinoInfo = lerEndereco(principal.endereco_entrega);
   const destinoCoord =
     destinoInfo.cidade && destinoInfo.uf ? coordDaCidade(destinoInfo.cidade, destinoInfo.uf) : null;
 
   // Eventos do lado do pedido (sempre existem)
   const timeline: EventoTimeline[] = [];
-  const confirmadoEm = (pedido.data_pagamento ?? pedido.created_at) as string | null;
+  const confirmadoEm = principal.data_pagamento ?? principal.created_at;
   timeline.push({
     titulo: "Pedido confirmado",
     descricao: "Recebemos o seu pedido.",
@@ -178,13 +298,13 @@ export async function detalhePedido(cpf: string, codigo: string): Promise<Pedido
     quando: confirmadoEm,
     atual: false,
   });
-  if (pedido.data_pagamento) {
+  if (principal.data_pagamento) {
     timeline.push({
       titulo: "Pagamento aprovado",
       descricao: null,
       cidade: null,
       uf: null,
-      quando: pedido.data_pagamento as string,
+      quando: principal.data_pagamento,
       atual: false,
     });
   }
@@ -192,13 +312,13 @@ export async function detalhePedido(cpf: string, codigo: string): Promise<Pedido
   // Histórico da transportadora: o último webhook da Loggi traz o
   // trackingHistory COMPLETO — basta o evento mais recente do rastreio.
   let ultimaPosicao: PedidoDetalhe["ultima_posicao"] = null;
-  let previsao: string | null = (pedido.data_prometida_entrega as string | null) ?? null;
+  let previsao: string | null = grupo.map((r) => r.data_prometida_entrega).find(Boolean) ?? null;
   let teveEventosTransportadora = false;
-  if (pedido.codigo_rastreio) {
+  if (codigoRastreio) {
     const { data: eventos } = await db
       .from("h7_eventos_raw")
       .select("payload_raw,created_at")
-      .eq("tracking_code", pedido.codigo_rastreio)
+      .eq("tracking_code", codigoRastreio)
       .order("created_at", { ascending: false })
       .limit(1);
     const payload = eventos?.[0]?.payload_raw as
@@ -245,35 +365,35 @@ export async function detalhePedido(cpf: string, codigo: string): Promise<Pedido
   // Envios pela malha postal da H7 não emitem eventos por cidade (só a malha
   // Loggi emite). Sem eventos da transportadora, os marcos do próprio pedido
   // preenchem a timeline; entregue, o mapa pina o destino.
-  if (!teveEventosTransportadora && pedido.data_chegou_logistica) {
+  if (!teveEventosTransportadora && dataChegouLogistica) {
     timeline.push({
       titulo: "Recebido na base logística",
       descricao: "Seu pedido está com a transportadora.",
       cidade: null,
       uf: null,
-      quando: pedido.data_chegou_logistica as string,
+      quando: dataChegouLogistica,
       atual: false,
     });
   }
-  if (!ultimaPosicao && pedido.status === "entregue" && destinoInfo.cidade && destinoInfo.uf && destinoCoord) {
+  if (!ultimaPosicao && status === "entregue" && destinoInfo.cidade && destinoInfo.uf && destinoCoord) {
     ultimaPosicao = {
       cidade: destinoInfo.cidade,
       uf: destinoInfo.uf,
       lat: destinoCoord[0],
       lng: destinoCoord[1],
       descricao: "Objeto entregue ao destinatário",
-      quando: (pedido.data_entrega as string | null) ?? null,
+      quando: dataEntrega,
     };
   }
 
   // Entregue: evento final vindo do próprio pedido
-  if (pedido.status === "entregue") {
+  if (status === "entregue") {
     timeline.push({
       titulo: "Entregue",
       descricao: "Seu pedido chegou. Bom proveito!",
       cidade: destinoInfo.cidade,
       uf: destinoInfo.uf,
-      quando: (pedido.data_entrega as string | null) ?? null,
+      quando: dataEntrega,
       atual: false,
     });
   }
@@ -282,23 +402,26 @@ export async function detalhePedido(cpf: string, codigo: string): Promise<Pedido
   timeline.sort((a, b) => ((a.quando ?? "") < (b.quando ?? "") ? 1 : -1));
   if (timeline.length) timeline[0].atual = true;
 
-  const nome = ((pedido.cliente_nome as string) ?? "").trim();
+  const nome = (principal.cliente_nome ?? "").trim();
+  const itens: ItemCompra[] = [principal, ...grupo.filter((r) => r !== principal)].map((r) => ({
+    produto: nomeExibicaoProduto(r.produto_nome, r.produto_grupo),
+    qtd_potes: r.qtd_potes,
+    valor_total: r.valor_total,
+  }));
 
   return {
-    codigo: pedido.payt_transaction_id as string,
+    codigo: principal.payt_transaction_id,
     primeiro_nome: nome.split(/\s+/)[0] || "cliente",
     cliente_nome: nome,
-    produto: nomeExibicaoProduto(
-      pedido.produto_nome as string | null,
-      pedido.produto_grupo as string | null
-    ),
-    valor_total: pedido.valor_total as number | null,
-    forma_pagamento: pedido.forma_pagamento as string | null,
-    parcelas: pedido.parcelas as number | null,
-    status: pedido.status as string,
-    etapa: ETAPA_POR_STATUS[pedido.status as string] ?? 1,
-    devolvido: pedido.status === "devolvido",
-    codigo_rastreio: pedido.codigo_rastreio as string | null,
+    produto: tituloDaCompra(grupo, principal),
+    itens,
+    valor_total: somaOuNull(grupo, "valor_total"),
+    forma_pagamento: principal.forma_pagamento,
+    parcelas: principal.parcelas,
+    status,
+    etapa: ETAPA_POR_STATUS[status] ?? 1,
+    devolvido: status === "devolvido",
+    codigo_rastreio: codigoRastreio,
     previsao_entrega: previsao,
     destino: {
       cidade: destinoInfo.cidade,
@@ -310,11 +433,8 @@ export async function detalhePedido(cpf: string, codigo: string): Promise<Pedido
     timeline,
     endereco_resumo: destinoInfo.resumo,
     endereco_completo: destinoInfo.completo,
-    qtd_potes: pedido.qtd_potes as number | null,
-    data_pagamento: pedido.data_pagamento as string | null,
-    conteudo: conteudoDoProduto(
-      pedido.produto_nome as string | null,
-      pedido.produto_grupo as string | null
-    ),
+    qtd_potes: somaOuNull(grupo, "qtd_potes"),
+    data_pagamento: principal.data_pagamento,
+    conteudo: conteudoDoProduto(principal.produto_nome, principal.produto_grupo),
   };
 }

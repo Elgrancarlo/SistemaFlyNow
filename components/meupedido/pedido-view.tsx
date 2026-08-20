@@ -34,10 +34,17 @@ interface EventoTimeline {
   atual: boolean;
 }
 
+interface ItemCompra {
+  produto: string;
+  qtd_potes: number | null;
+  valor_total: number | null;
+}
+
 interface PedidoDetalhe {
   codigo: string;
   primeiro_nome: string;
   produto: string;
+  itens: ItemCompra[];
   valor_total: number | null;
   forma_pagamento: string | null;
   parcelas: number | null;
@@ -412,12 +419,27 @@ export function PedidoView({ codigo }: { codigo: string }) {
           <p className="text-xs font-semibold tracking-wide text-orange-700 uppercase">
             Detalhes do pedido
           </p>
+          {/* Compra com pedido adicional: os itens aparecem juntos — é um pedido só */}
+          {pedido.itens && pedido.itens.length > 1 && (
+            <div className="mt-3 divide-y divide-stone-100 rounded-xl bg-stone-50 px-3.5">
+              {pedido.itens.map((item, i) => (
+                <div key={`${item.produto}-${i}`} className="flex items-baseline justify-between gap-4 py-2.5 text-sm">
+                  <span className="text-stone-700">{item.produto}</span>
+                  {item.valor_total != null && (
+                    <span className="shrink-0 font-medium text-stone-900">{valorBRL(item.valor_total)}</span>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
           <dl className="mt-3 divide-y divide-stone-100 text-sm">
             {[
               ["Pedido", `#${pedido.codigo}`],
-              ["Produto", pedido.produto],
+              pedido.itens && pedido.itens.length > 1 ? null : ["Produto", pedido.produto],
               pedido.qtd_potes ? ["Quantidade", `${pedido.qtd_potes} pote${pedido.qtd_potes > 1 ? "s" : ""}`] : null,
-              pedido.valor_total != null ? ["Valor", valorBRL(pedido.valor_total)] : null,
+              pedido.valor_total != null
+                ? [pedido.itens && pedido.itens.length > 1 ? "Valor total" : "Valor", valorBRL(pedido.valor_total)]
+                : null,
               pedido.forma_pagamento
                 ? [
                     "Pagamento",
