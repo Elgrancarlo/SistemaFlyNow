@@ -385,6 +385,32 @@ export async function detalhePedido(cpf: string, codigo: string): Promise<Pedido
       quando: dataEntrega,
     };
   }
+  // Aguardando retirada: o pacote está na unidade da cidade de destino.
+  if (!ultimaPosicao && status === "aguardando_retirada" && destinoInfo.cidade && destinoInfo.uf && destinoCoord) {
+    ultimaPosicao = {
+      cidade: destinoInfo.cidade,
+      uf: destinoInfo.uf,
+      lat: destinoCoord[0],
+      lng: destinoCoord[1],
+      descricao: "Aguardando retirada na unidade da transportadora",
+      quando: null,
+    };
+  }
+  // Postado/em trânsito sem eventos: a última movimentação conhecida é a saída
+  // da central de envios da H7 (Piracicaba/SP — origem de todos os envios).
+  if (!ultimaPosicao && (status === "postado" || status === "em_transporte")) {
+    const origem = coordDaCidade("Piracicaba", "SP");
+    if (origem) {
+      ultimaPosicao = {
+        cidade: "Piracicaba",
+        uf: "SP",
+        lat: origem[0],
+        lng: origem[1],
+        descricao: "Postado — seu pedido está com a transportadora",
+        quando: dataChegouLogistica,
+      };
+    }
+  }
 
   // Entregue: evento final vindo do próprio pedido
   if (status === "entregue") {
