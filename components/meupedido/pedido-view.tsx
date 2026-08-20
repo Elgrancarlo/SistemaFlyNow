@@ -9,6 +9,8 @@ import {
   CheckCircle2,
   Clock,
   Copy,
+  FileText,
+  Gift,
   Headset,
   Lightbulb,
   Mail,
@@ -18,6 +20,7 @@ import {
   Truck,
 } from "lucide-react";
 import dynamic from "next/dynamic";
+import { midiaDoProduto } from "@/lib/meupedido/midia-produtos";
 
 // A malha do mapa pesa ~60 KB — só baixa quando o pedido tem posição no rastreio.
 const MapaPedido = dynamic(() => import("./mapa-pedido").then((m) => m.MapaPedido), {
@@ -72,17 +75,20 @@ interface PedidoDetalhe {
     categoria: string;
     descricao: string;
     uso: { rotulo: string; valor: string }[];
+    passos?: string[];
     dicas: string[];
+    faq?: { pergunta: string; resposta: string }[];
     avisos: string[];
   } | null;
 }
 
-type Aba = "rastreio" | "pedido" | "usar" | "ajuda";
+type Aba = "rastreio" | "pedido" | "usar" | "materiais" | "ajuda";
 
 const ABAS: { id: Aba; rotulo: string; Icone: typeof Truck }[] = [
   { id: "rastreio", rotulo: "Rastreio", Icone: Truck },
   { id: "pedido", rotulo: "Pedido", Icone: ReceiptText },
   { id: "usar", rotulo: "Como usar", Icone: BookOpen },
+  { id: "materiais", rotulo: "Materiais", Icone: Gift },
   { id: "ajuda", rotulo: "Atendimento", Icone: Headset },
 ];
 
@@ -207,6 +213,9 @@ export function PedidoView({ codigo }: { codigo: string }) {
       ? `${pedido.destino.cidade}/${pedido.destino.uf}`
       : null;
 
+  const midia = midiaDoProduto(pedido.produto, pedido.conteudo?.nome ?? null);
+  const abas = midia?.materiais?.length ? ABAS : ABAS.filter((a) => a.id !== "materiais");
+
   return (
     <main className="flex flex-1 flex-col">
       {/* Cabeçalho */}
@@ -231,9 +240,20 @@ export function PedidoView({ codigo }: { codigo: string }) {
         <p className="mt-0.5 text-sm text-stone-500">Pedido #{pedido.codigo} · Flynow</p>
 
         <div className="mt-3 flex items-center gap-3">
-          <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-orange-50 text-orange-600">
-            <Package className="h-6 w-6" aria-hidden />
-          </div>
+          {midia?.foto ? (
+            /* eslint-disable-next-line @next/next/no-img-element */
+            <img
+              src={midia.foto}
+              alt={pedido.produto}
+              width={48}
+              height={48}
+              className="h-12 w-12 shrink-0 rounded-xl bg-white object-contain ring-1 ring-stone-900/5"
+            />
+          ) : (
+            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-xl bg-orange-50 text-orange-600">
+              <Package className="h-6 w-6" aria-hidden />
+            </div>
+          )}
           <div>
             <p className="font-bold text-stone-900">{pedido.produto}</p>
             {pedido.valor_total != null && (
@@ -482,6 +502,16 @@ export function PedidoView({ codigo }: { codigo: string }) {
               <p className="text-xs font-semibold tracking-wide text-orange-700 uppercase">
                 Sobre o produto
               </p>
+              {midia?.foto && (
+                /* eslint-disable-next-line @next/next/no-img-element */
+                <img
+                  src={midia.foto}
+                  alt={pedido.conteudo.nome}
+                  width={640}
+                  height={640}
+                  className="mx-auto mt-3 h-40 w-40 object-contain"
+                />
+              )}
               <h2 className="mt-1 text-lg font-bold text-stone-900">{pedido.conteudo.nome}</h2>
               <p className="text-xs text-stone-400">{pedido.conteudo.categoria}</p>
               <p className="mt-2 text-sm leading-relaxed text-stone-600">
@@ -501,7 +531,36 @@ export function PedidoView({ codigo }: { codigo: string }) {
                   </div>
                 ))}
               </dl>
+              {midia?.guia && (
+                /* eslint-disable-next-line @next/next/no-img-element */
+                <img
+                  src={midia.guia}
+                  alt={`Guia de preparo — ${pedido.conteudo.nome}`}
+                  width={768}
+                  height={1152}
+                  loading="lazy"
+                  className="mt-4 w-full rounded-xl ring-1 ring-stone-900/5"
+                />
+              )}
             </section>
+
+            {pedido.conteudo.passos && pedido.conteudo.passos.length > 0 && (
+              <section className="mt-4 rounded-2xl bg-white p-5 shadow-sm ring-1 ring-stone-900/5">
+                <p className="text-xs font-semibold tracking-wide text-orange-700 uppercase">
+                  Como preparar — passo a passo
+                </p>
+                <ol className="mt-2 space-y-2.5">
+                  {pedido.conteudo.passos.map((passo, i) => (
+                    <li key={passo} className="flex gap-2.5 text-sm text-stone-700">
+                      <span className="mt-0.5 flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-orange-100 text-[11px] font-bold text-orange-700">
+                        {i + 1}
+                      </span>
+                      {passo}
+                    </li>
+                  ))}
+                </ol>
+              </section>
+            )}
 
             <section className="mt-4 rounded-2xl bg-white p-5 shadow-sm ring-1 ring-stone-900/5">
               <p className="text-xs font-semibold tracking-wide text-orange-700 uppercase">
@@ -523,6 +582,30 @@ export function PedidoView({ codigo }: { codigo: string }) {
                 ))}
               </div>
             </section>
+
+            {pedido.conteudo.faq && pedido.conteudo.faq.length > 0 && (
+              <section className="mt-4 rounded-2xl bg-white p-5 shadow-sm ring-1 ring-stone-900/5">
+                <p className="text-xs font-semibold tracking-wide text-orange-700 uppercase">
+                  Perguntas frequentes
+                </p>
+                <div className="mt-2 divide-y divide-stone-100">
+                  {pedido.conteudo.faq.map((item) => (
+                    <details key={item.pergunta} className="group py-2.5">
+                      <summary className="flex cursor-pointer list-none items-center justify-between gap-3 text-sm font-medium text-stone-800 [&::-webkit-details-marker]:hidden">
+                        {item.pergunta}
+                        <span
+                          aria-hidden
+                          className="shrink-0 text-stone-400 transition-transform group-open:rotate-90"
+                        >
+                          ›
+                        </span>
+                      </summary>
+                      <p className="mt-2 text-sm leading-relaxed text-stone-600">{item.resposta}</p>
+                    </details>
+                  ))}
+                </div>
+              </section>
+            )}
           </>
         ) : (
           <section className="mt-4 rounded-2xl bg-white p-5 text-center shadow-sm ring-1 ring-stone-900/5">
@@ -542,6 +625,41 @@ export function PedidoView({ codigo }: { codigo: string }) {
             </button>
           </section>
         ))}
+
+      {/* Aba Materiais: bônus em PDF que acompanham o produto */}
+      {aba === "materiais" && midia?.materiais && midia.materiais.length > 0 && (
+        <section className="mt-4 rounded-2xl bg-white p-5 shadow-sm ring-1 ring-stone-900/5">
+          <p className="text-xs font-semibold tracking-wide text-orange-700 uppercase">
+            Seus materiais
+          </p>
+          <p className="mt-1 text-sm text-stone-600">
+            Conteúdos que acompanham a sua compra. Toque para abrir — você também pode salvar
+            no celular.
+          </p>
+          <ul className="mt-3 space-y-2.5">
+            {midia.materiais.map((m) => (
+              <li key={m.arquivo}>
+                <a
+                  href={m.arquivo}
+                  target="_blank"
+                  rel="noopener"
+                  className="flex items-center gap-3 rounded-xl bg-stone-50 p-3.5 transition hover:bg-orange-50"
+                >
+                  <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-lg bg-white text-orange-600 ring-1 ring-stone-900/5">
+                    <FileText className="h-5 w-5" aria-hidden />
+                  </span>
+                  <span className="min-w-0 flex-1 text-sm font-medium text-stone-800">
+                    {m.titulo}
+                  </span>
+                  <span className="shrink-0 rounded-full bg-stone-200/70 px-2 py-0.5 text-[10px] font-semibold text-stone-600">
+                    PDF
+                  </span>
+                </a>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
 
       {/* Atendimento */}
       {aba === "ajuda" && (
@@ -572,7 +690,7 @@ export function PedidoView({ codigo }: { codigo: string }) {
       <div className="h-20" aria-hidden />
       <nav className="fixed inset-x-0 bottom-0 z-20 border-t border-stone-200 bg-white/95 backdrop-blur">
         <div className="mx-auto flex w-full max-w-md items-stretch justify-around px-2 pt-1.5 pb-[max(0.375rem,env(safe-area-inset-bottom))]">
-          {ABAS.map(({ id, rotulo, Icone }) => (
+          {abas.map(({ id, rotulo, Icone }) => (
             <button
               key={id}
               onClick={() => setAba(id)}

@@ -3,6 +3,7 @@
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Package, Search, ShieldCheck } from "lucide-react";
+import { midiaDoProduto } from "@/lib/meupedido/midia-produtos";
 
 interface PedidoResumo {
   codigo: string;
@@ -155,15 +156,27 @@ export default function MeuPedidoHome() {
               <ul className="space-y-3">
                 {pedidos.map((p) => {
                   const st = STATUS_CLIENTE[p.status] ?? { label: p.status, cls: "bg-stone-100 text-stone-700" };
+                  const foto = midiaDoProduto(p.produto, null)?.foto;
                   return (
                     <li key={p.codigo}>
                       <button
                         onClick={() => router.push(`/meupedido/${p.codigo}`)}
                         className="flex w-full items-center gap-3 rounded-2xl bg-white p-4 text-left shadow-sm ring-1 ring-stone-900/5 transition hover:ring-orange-500/40"
                       >
-                        <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-orange-50 text-orange-600">
-                          <Package className="h-5 w-5" aria-hidden />
-                        </div>
+                        {foto ? (
+                          /* eslint-disable-next-line @next/next/no-img-element */
+                          <img
+                            src={foto}
+                            alt={p.produto}
+                            width={44}
+                            height={44}
+                            className="h-11 w-11 shrink-0 rounded-xl bg-white object-contain ring-1 ring-stone-900/5"
+                          />
+                        ) : (
+                          <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl bg-orange-50 text-orange-600">
+                            <Package className="h-5 w-5" aria-hidden />
+                          </div>
+                        )}
                         <div className="min-w-0 flex-1">
                           <p className="truncate font-semibold text-stone-900">{p.produto}</p>
                           <p className="text-xs text-stone-500">
