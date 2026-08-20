@@ -34,12 +34,14 @@ function mapearStatusH7(h7Status: string, temRastreio: boolean): string | null {
 interface H7Order {
   code: string;
   status: string;
+  is_upsell?: boolean;
   tracking_code?: string | null;
   shipping_company?: string | null;
   plan?: { qty?: number; name?: string };
   promised_date?: string | null;        // "YYYY-MM-DD" — prazo prometido pela H7
   delivered_at?: string | null;         // ISO — data de entrega confirmada
   last_hub_arrival?: string | null;     // ISO — última vez que chegou em uma base
+  upsell?: H7Order[];                   // pedidos do mesmo carrinho (inclui o próprio principal)
 }
 
 interface H7Response {
@@ -60,12 +62,12 @@ interface PedidoRow {
   payt_transaction_id: string;
 }
 
-async function runSync(startDate: string, endDate: string) {
+async function runSync(startDate: string, endDate: string, enviarWhatsapp = true) {
   if (!H7_TOKEN) return { ok: false, erro: "H7_TOKEN não configurado" };
 
   const supabase = createServiceClient();
 
-  console.log(`[sync-h7] iniciando sync: ${startDate} → ${endDate}`);
+  console.log(`[sync-h7] iniciando sync: ${startDate} → ${endDate} (whatsapp=${enviarWhatsapp})`);
 
   let page = 1;
   let totalProcessados = 0;
@@ -88,8 +90,22 @@ async function runSync(startDate: string, endDate: string) {
     const orders: H7Order[] = h7Data.data ?? [];
     if (orders.length === 0) break;
 
+    // A H7 só expõe o envio no pedido PRINCIPAL; upsells vêm aninhados em
+    // order.upsell (mesmo carrinho, mesmo rastreio) e nunca aparecem como
+    // pedido próprio na listagem. Achata para que upsells também casem por
+    // payt_transaction_id, herdando rastreio e datas do principal.
+    const itens: { ord: H7Order; principal: H7Order }[] = [];
+    const vistos = new Set<string>();
+    for (const principal of orders) {
+      for (const ord of [principal, ...(principal.upsell ?? [])]) {
+        if (!ord.code || vistos.has(ord.code)) continue;
+        vistos.add(ord.code);
+        itens.push({ ord, principal });
+      }
+    }
+
     // Buscar todos os pedidos desta página de uma vez
-    const codes = orders.map((o) => o.code).filter(Boolean);
+    const codes = itens.map(({ ord }) => ord.code);
     const { data: pedidos } = await supabase
       .from("pedidos")
       .select("id, status, codigo_rastreio, chargeback, cliente_nome, cliente_telefone, payt_transaction_id")
@@ -99,10 +115,11 @@ async function runSync(startDate: string, endDate: string) {
       (pedidos ?? []).map((p) => [p.payt_transaction_id, p as PedidoRow])
     );
 
-    // Verificar quais pedidos já têm disparo WhatsApp (batch)
-    const idsParaCheckWpp = orders
-      .filter((o) => o.status === "waiting_client")
-      .map((o) => pedidoMap.get(o.code)?.id)
+    // Verificar quais pedidos já têm disparo WhatsApp (batch) — só o principal
+    // dispara: upsell compartilha o telefone e a encomenda.
+    const idsParaCheckWpp = itens
+      .filter(({ ord }) => ord.status === "waiting_client" && !ord.is_upsell)
+      .map(({ ord }) => pedidoMap.get(ord.code)?.id)
       .filter(Boolean) as string[];
 
     let disparosExistentes = new Set<string>();
@@ -115,19 +132,23 @@ async function runSync(startDate: string, endDate: string) {
       disparosExistentes = new Set((disparos ?? []).map((d) => d.pedido_id));
     }
 
-    for (const order of orders) {
-      if (!order.code) continue;
+    for (const { ord, principal } of itens) {
       totalProcessados++;
 
-      const pedido = pedidoMap.get(order.code);
+      const pedido = pedidoMap.get(ord.code);
       if (!pedido) continue;
 
-      const novoStatus = mapearStatusH7(order.status, !!order.tracking_code);
-      const isChargeback = order.status === "chargeback";
+      const trackingCode = ord.tracking_code ?? principal.tracking_code ?? null;
+      const promisedDate = ord.promised_date ?? principal.promised_date ?? null;
+      const deliveredAt  = ord.delivered_at ?? principal.delivered_at ?? null;
+      const hubArrival   = ord.last_hub_arrival ?? principal.last_hub_arrival ?? null;
+
+      const novoStatus = mapearStatusH7(ord.status, !!trackingCode);
+      const isChargeback = ord.status === "chargeback";
       const updates: Record<string, unknown> = {};
 
-      if (order.tracking_code && !pedido.codigo_rastreio) {
-        updates.codigo_rastreio = order.tracking_code;
+      if (trackingCode && !pedido.codigo_rastreio) {
+        updates.codigo_rastreio = trackingCode;
       }
       if (isChargeback && !pedido.chargeback) {
         updates.chargeback = true;
@@ -139,19 +160,19 @@ async function runSync(startDate: string, endDate: string) {
         if (prioNova > prioAtual) {
           updates.status = novoStatus;
           if (novoStatus === "entregue") {
-            updates.data_entrega = order.delivered_at ?? new Date().toISOString();
+            updates.data_entrega = deliveredAt ?? new Date().toISOString();
           }
         }
       }
 
       // Capturar data prometida pela H7 (campo promised_date: "YYYY-MM-DD")
-      if (order.promised_date) {
-        updates.data_prometida_entrega = order.promised_date;
+      if (promisedDate) {
+        updates.data_prometida_entrega = promisedDate;
       }
 
       // Capturar data de chegada na base logística (campo last_hub_arrival)
-      if (order.last_hub_arrival) {
-        updates.data_chegou_logistica = order.last_hub_arrival;
+      if (hubArrival) {
+        updates.data_chegou_logistica = hubArrival;
       }
 
       if (Object.keys(updates).length === 0) continue;
@@ -160,12 +181,18 @@ async function runSync(startDate: string, endDate: string) {
       const { error: updateErr } = await supabase
         .from("pedidos").update(updates).eq("id", pedido.id);
 
-      if (updateErr) { erros.push(`Erro pedido ${order.code}: ${updateErr.message}`); continue; }
+      if (updateErr) { erros.push(`Erro pedido ${ord.code}: ${updateErr.message}`); continue; }
       totalAtualizados++;
 
       // WhatsApp automático ao entrar em aguardando_retirada
-      if (updates.status === "aguardando_retirada" && pedido.cliente_telefone && !disparosExistentes.has(pedido.id)) {
-        const codigoRastreio = (updates.codigo_rastreio as string) ?? pedido.codigo_rastreio ?? "N/A";
+      if (
+        updates.status === "aguardando_retirada" &&
+        enviarWhatsapp &&
+        !ord.is_upsell &&
+        pedido.cliente_telefone &&
+        !disparosExistentes.has(pedido.id)
+      ) {
+        const codigoRastreio = trackingCode ?? pedido.codigo_rastreio ?? "N/A";
 
         const { data: novoDisparo } = await supabase
           .from("whatsapp_disparos")
@@ -223,14 +250,18 @@ function isAuthorized(req: NextRequest) {
   return header === INTERNAL_API_SECRET;
 }
 
-// GET — chamado pelo cron da Vercel (últimos 7 dias)
+// GET — cron. Sem parâmetro cobre 7 dias; ?dias=N amplia a janela (varredura
+// diária/backfill). Janela ampla NÃO dispara WhatsApp de retirada — backfill
+// não deve mandar mensagem de encomenda antiga.
 export async function GET(req: NextRequest) {
   if (!isAuthorized(req)) {
     return NextResponse.json({ ok: false, erro: "unauthorized" }, { status: 401 });
   }
-  const { startDate, endDate } = defaultDates(7);
+  const diasParam = Number(req.nextUrl.searchParams.get("dias"));
+  const dias = Number.isFinite(diasParam) && diasParam >= 1 ? Math.min(diasParam, 120) : 7;
+  const { startDate, endDate } = defaultDates(dias);
   console.log(`[sync-h7] cron trigger: ${startDate} → ${endDate}`);
-  const result = await runSync(startDate, endDate);
+  const result = await runSync(startDate, endDate, dias <= 7);
   return NextResponse.json(result, { status: result.ok ? 200 : 500 });
 }
 

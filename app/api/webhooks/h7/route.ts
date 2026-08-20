@@ -29,6 +29,14 @@ const STATUS_MAP: Record<string, string> = {
   "22": "em_transporte",   // Aguardando ação do remetente (idem)
 };
 
+interface PedidoAlvo {
+  id: string;
+  status: string | null;
+  cliente_telefone: string | null;
+  cliente_nome: string | null;
+  codigo_rastreio: string | null;
+}
+
 export async function POST(req: NextRequest) {
   let raw: unknown;
   try {
@@ -73,41 +81,27 @@ export async function POST(req: NextRequest) {
       continue;
     }
 
-    // 3. Buscar pedido pelo código de rastreio ou loggi_key
-    let pedidoId: string | null = null;
-    let statusAtual: string | null = null;
-    let clienteTelefone: string | null = null;
-    let clienteNome: string | null = null;
-    let codigoRastreioAtual: string | null = null;
+    // 3. Buscar pedidos pelo código de rastreio ou loggi_key. Upsell compartilha
+    //    o rastreio do pedido principal, então o mesmo evento pode pertencer a
+    //    mais de uma linha — todas avançam juntas.
+    let alvos: PedidoAlvo[] = [];
 
-    const { data: pedido } = await supabase
+    const { data: porRastreio } = await supabase
       .from("pedidos")
       .select("id, status, cliente_telefone, cliente_nome, codigo_rastreio")
-      .eq("codigo_rastreio", trackingCode)
-      .single();
+      .eq("codigo_rastreio", trackingCode);
 
-    if (pedido) {
-      pedidoId = pedido.id;
-      statusAtual = pedido.status;
-      clienteTelefone = pedido.cliente_telefone;
-      clienteNome = pedido.cliente_nome;
-      codigoRastreioAtual = pedido.codigo_rastreio;
+    if (porRastreio && porRastreio.length > 0) {
+      alvos = porRastreio as PedidoAlvo[];
     } else if (loggiKey) {
-      const { data: p2 } = await supabase
+      const { data: porKey } = await supabase
         .from("pedidos")
         .select("id, status, cliente_telefone, cliente_nome, codigo_rastreio")
-        .eq("loggi_key", loggiKey)
-        .single();
-      if (p2) {
-        pedidoId = p2.id;
-        statusAtual = p2.status;
-        clienteTelefone = p2.cliente_telefone;
-        clienteNome = p2.cliente_nome;
-        codigoRastreioAtual = p2.codigo_rastreio;
-      }
+        .eq("loggi_key", loggiKey);
+      if (porKey && porKey.length > 0) alvos = porKey as PedidoAlvo[];
     }
 
-    if (!pedidoId) {
+    if (alvos.length === 0) {
       console.log(`[webhook-h7] pedido não encontrado: tracking=${trackingCode}`);
       continue;
     }
@@ -118,50 +112,53 @@ export async function POST(req: NextRequest) {
     // data_chegada_logistica: registrada quando status code = 17 ("Chegou em uma base")
     const chegouNaBase      = statusCode === "17";
 
-    // 5. Atualizar pedido
-    const update: Record<string, unknown> = {
-      loggi_key:  loggiKey,
-      updated_at: new Date().toISOString(),
-    };
+    for (const [idx, pedido] of alvos.entries()) {
+      // 5. Atualizar pedido
+      const update: Record<string, unknown> = {
+        loggi_key:  loggiKey,
+        updated_at: new Date().toISOString(),
+      };
 
-    // Só avança status se a prioridade do novo for maior que o atual
-    // (impede que eventos atrasados regridan o pedido)
-    const prioAtual = STATUS_PRIORIDADE[statusAtual ?? ""] ?? -1;
-    const prioNova  = STATUS_PRIORIDADE[novoStatus] ?? -1;
-    if (prioNova > prioAtual) {
-      update.status = novoStatus;
-    }
-    if (!codigoRastreioAtual && trackingCode) update.codigo_rastreio = trackingCode;
-    if (novoStatus === "entregue" && updatedTime)  update.data_entrega = updatedTime;
+      // Só avança status se a prioridade do novo for maior que o atual
+      // (impede que eventos atrasados regridan o pedido)
+      const prioAtual = STATUS_PRIORIDADE[pedido.status ?? ""] ?? -1;
+      const prioNova  = STATUS_PRIORIDADE[novoStatus] ?? -1;
+      if (prioNova > prioAtual) {
+        update.status = novoStatus;
+      }
+      if (!pedido.codigo_rastreio && trackingCode) update.codigo_rastreio = trackingCode;
+      if (novoStatus === "entregue" && updatedTime)  update.data_entrega = updatedTime;
 
-    // Salva data prometida sempre que a H7 informar (pode atualizar)
-    if (promisedDate) update.data_prometida_entrega = promisedDate;
+      // Salva data prometida sempre que a H7 informar (pode atualizar)
+      if (promisedDate) update.data_prometida_entrega = promisedDate;
 
-    // Salva o momento em que chegou na base logística (primeira ocorrência)
-    if (chegouNaBase && updatedTime) update.data_chegou_logistica = updatedTime;
+      // Salva o momento em que chegou na base logística (primeira ocorrência)
+      if (chegouNaBase && updatedTime) update.data_chegou_logistica = updatedTime;
 
-    await supabase.from("pedidos").update(update).eq("id", pedidoId);
-    atualizados++;
+      await supabase.from("pedidos").update(update).eq("id", pedido.id);
+      atualizados++;
 
-    console.log(`[webhook-h7] ${trackingCode} → ${novoStatus} (pedido ${pedidoId}) prometida=${promisedDate ?? "n/a"} chegouBase=${chegouNaBase}`);
+      console.log(`[webhook-h7] ${trackingCode} → ${novoStatus} (pedido ${pedido.id}) prometida=${promisedDate ?? "n/a"} chegouBase=${chegouNaBase}`);
 
-    // 6. Disparar WhatsApp se chegou em aguardando_retirada (e ainda não era)
-    if (novoStatus === "aguardando_retirada" && statusAtual !== "aguardando_retirada" && clienteTelefone) {
-      const { data: jaDisparado } = await supabase
-        .from("whatsapp_disparos")
-        .select("id")
-        .eq("pedido_id", pedidoId)
-        .eq("tipo_mensagem", "aguardando_retirada")
-        .neq("status", "falhou")
-        .single();
+      // 6. Disparar WhatsApp se chegou em aguardando_retirada (e ainda não era).
+      //    Só na primeira linha — as demais são upsell do mesmo cliente/encomenda.
+      if (idx === 0 && novoStatus === "aguardando_retirada" && pedido.status !== "aguardando_retirada" && pedido.cliente_telefone) {
+        const { data: jaDisparado } = await supabase
+          .from("whatsapp_disparos")
+          .select("id")
+          .eq("pedido_id", pedido.id)
+          .eq("tipo_mensagem", "aguardando_retirada")
+          .neq("status", "falhou")
+          .single();
 
-      if (!jaDisparado) {
-        await supabase.from("whatsapp_disparos").insert({
-          pedido_id:      pedidoId,
-          tipo_mensagem:  "aguardando_retirada",
-          status:         "pendente",
-          data_envio:     new Date().toISOString(),
-        });
+        if (!jaDisparado) {
+          await supabase.from("whatsapp_disparos").insert({
+            pedido_id:      pedido.id,
+            tipo_mensagem:  "aguardando_retirada",
+            status:         "pendente",
+            data_envio:     new Date().toISOString(),
+          });
+        }
       }
     }
   }

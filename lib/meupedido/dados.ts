@@ -155,7 +155,7 @@ export async function detalhePedido(cpf: string, codigo: string): Promise<Pedido
   const { data: pedido } = await db
     .from("pedidos")
     .select(
-      "payt_transaction_id,cliente_nome,cliente_cpf,produto_nome,produto_grupo,qtd_potes,valor_total,forma_pagamento,parcelas,status,codigo_rastreio,data_pagamento,data_prometida_entrega,data_entrega,endereco_entrega,created_at"
+      "payt_transaction_id,cliente_nome,cliente_cpf,produto_nome,produto_grupo,qtd_potes,valor_total,forma_pagamento,parcelas,status,codigo_rastreio,data_pagamento,data_prometida_entrega,data_entrega,data_chegou_logistica,endereco_entrega,created_at"
     )
     .eq("cliente_cpf", digits)
     .eq("payt_transaction_id", codigo)
@@ -193,6 +193,7 @@ export async function detalhePedido(cpf: string, codigo: string): Promise<Pedido
   // trackingHistory COMPLETO — basta o evento mais recente do rastreio.
   let ultimaPosicao: PedidoDetalhe["ultima_posicao"] = null;
   let previsao: string | null = (pedido.data_prometida_entrega as string | null) ?? null;
+  let teveEventosTransportadora = false;
   if (pedido.codigo_rastreio) {
     const { data: eventos } = await db
       .from("h7_eventos_raw")
@@ -208,6 +209,7 @@ export async function detalhePedido(cpf: string, codigo: string): Promise<Pedido
     const historia = (payload?.trackingHistory ?? [])
       .filter((ev) => ev?.status?.updatedTime)
       .sort((a, b) => (a.status!.updatedTime! < b.status!.updatedTime! ? -1 : 1));
+    teveEventosTransportadora = historia.length > 0;
 
     for (const ev of historia) {
       timeline.push({
@@ -238,6 +240,30 @@ export async function detalhePedido(cpf: string, codigo: string): Promise<Pedido
         break;
       }
     }
+  }
+
+  // Envios pela malha postal da H7 não emitem eventos por cidade (só a malha
+  // Loggi emite). Sem eventos da transportadora, os marcos do próprio pedido
+  // preenchem a timeline; entregue, o mapa pina o destino.
+  if (!teveEventosTransportadora && pedido.data_chegou_logistica) {
+    timeline.push({
+      titulo: "Recebido na base logística",
+      descricao: "Seu pedido está com a transportadora.",
+      cidade: null,
+      uf: null,
+      quando: pedido.data_chegou_logistica as string,
+      atual: false,
+    });
+  }
+  if (!ultimaPosicao && pedido.status === "entregue" && destinoInfo.cidade && destinoInfo.uf && destinoCoord) {
+    ultimaPosicao = {
+      cidade: destinoInfo.cidade,
+      uf: destinoInfo.uf,
+      lat: destinoCoord[0],
+      lng: destinoCoord[1],
+      descricao: "Objeto entregue ao destinatário",
+      quando: (pedido.data_entrega as string | null) ?? null,
+    };
   }
 
   // Entregue: evento final vindo do próprio pedido
